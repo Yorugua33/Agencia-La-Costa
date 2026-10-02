@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#050b1a">
+<title>Chofer</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Outfit:wght@600;700;800&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script></head>
+<body>
+<div id="login" class="overlay"><form id="lf" class="card"><div class="brand" style="justify-content:center"><img src="https://i.imgur.com/fZzzc3U.png" alt=""><h1 id="brand">Chofer</h1></div>
+ <h3 class="c">Ingreso de unidad</h3>
+ <input id="mv" inputmode="numeric" placeholder="Nº de móvil" required autocomplete="username">
+ <input id="pn" type="password" inputmode="numeric" placeholder="PIN" required autocomplete="current-password">
+ <div class="err" id="le"></div><button>Iniciar turno</button>
+ <div class="mut c">¿Sin acceso? Pedile el alta y el PIN a la central.</div></form></div>
+
+<header><div class="brand"><img src="https://i.imgur.com/fZzzc3U.png" alt=""><div><h1 id="who">Móvil</h1><small><span class="dot" id="dot"></span> <span id="gps">Buscando GPS…</span></small></div></div><button class="bad sm" id="exit">Salir</button></header>
+<main class="wrap" id="app" hidden>
+ <div class="card"><label class="mut">Estado en fila</label>
+  <select id="est"><option value="disponible">🟢 Disponible</option><option value="pausa">🟡 En pausa</option><option value="ocupado" disabled>🟠 En viaje</option></select></div>
+
+ <div class="card" id="trip" hidden style="border-color:var(--gold)">
+  <div class="row"><h3>Viaje asignado</h3><span id="tst"></span></div>
+  <div id="tdet"></div>
+  <div class="grid2"><a id="nav" target="_blank" rel="noopener"><button class="g" style="width:100%">🧭 Navegar</button></a><a id="call"><button class="g" style="width:100%">📞 Llamar</button></a></div>
+  <button id="adv" class="ok"></button>
+ </div>
+
+ <div class="card"><h3>Mapa</h3><div id="map" class="map"></div></div>
+ <div class="card"><h3>Chat con la central</h3><div id="chat" class="chat"></div>
+  <form id="cf" class="row" style="flex-wrap:nowrap"><input id="ct" placeholder="Escribir a la central…" autocomplete="off"><button class="sm">Enviar</button></form></div>
+</main>
+
+<script type="module">
+import{AG,D,db,P,TS,multi,ensureAnon,ESTADOS,esc,$,money,chip,loadCfg,listen,mkMap,pin,toast,beep,chatBind,chatSend}from'./core.js';
+const cfg=await loadCfg();$('#brand').textContent=cfg.nombre;
+const user=await ensureAnon(),LS='ck:'+AG;
+let K,map,me,pas,vid=null,via=null,lastPos=0,first=true;
+
+// Ingreso: el móvil debe existir (alta hecha por la central) y el PIN se valida en el servidor (reglas)
+async function login(m,pin){const k='chofer_'+m;await D.set(P('claims/'+k),{uid:user.uid,pin});const s=await D.get(P('choferes/'+k));if(!s.exists())throw 0;K=k;localStorage[LS]=m;enter(s.val())}
+$('#lf').onsubmit=async e=>{e.preventDefault();$('#le').textContent='';try{await login($('#mv').value.trim(),$('#pn').value.trim())}catch{$('#le').textContent='Móvil o PIN incorrecto'}};
+if(localStorage[LS])try{K='chofer_'+localStorage[LS];const s=await D.get(P('choferes/'+K));s.exists()?enter(s.val()):K=null}catch{K=null}
+
+function enter(c){
+ $('#login').hidden=true;$('#app').hidden=false;map=mkMap('map',cfg.centro);
+ // Presencia: si se cae la conexión la central lo ve fuera de fila sin perder su turno
+ D.onValue(D.ref(db,'.info/connected'),s=>{if(!s.val())return;D.onDisconnect(P(`choferes/${K}/conectado`)).set(false);D.update(P('choferes/'+K),{conectado:true});$('#dot').classList.add('on')});
+ if(!['ocupado','pausa'].includes(c.estado))D.update(P('choferes/'+K),{estado:'disponible',tsCola:TS,inicioTurno:TS});
+ listen('me',P('choferes/'+K),c=>{if(!c)return;$('#who').textContent=`#${c.movil} · ${c.chofer}`;$('#est').value=c.estado==='cerrado'?'disponible':c.estado;$('#est').disabled=c.estado==='ocupado';
+  const v=c.viajeActivo||null;if(v!==vid){vid=v;watch()}});
+ gps();try{navigator.wakeLock?.request('screen')}catch{}
+ chatBind('#chat','chats_choferes/'+K,'c');
+}
+$('#est').onchange=e=>D.update(P('choferes/'+K),{estado:e.target.value,tsCola:TS});
+
+// Viaje asignado en tiempo real (solo escucha SU viaje: escala con cualquier volumen)
+function watch(){
+ if(!vid){via=null;$('#trip').hidden=true;pas&&map.removeLayer(pas);pas=null;return}
+ if(!first)beep();first=false;
+ listen('via',P('viajes/'+vid),v=>{if(!v)return;via=v;$('#trip').hidden=false;$('#tst').innerHTML=chip(v.estado);
+  $('#tdet').innerHTML=`<div class="item"><b>👤 ${esc(v.pasajero)}</b><div>📍 ${esc(v.origen)}</div><div>🏁 ${esc(v.destino)}</div><div class="row"><span class="mut">Tarifa estimada</span><b style="color:var(--ok)">${money(v.monto)}</b></div></div>`;
+  $('#nav').href=v.lat?`https://www.google.com/maps/dir/?api=1&destination=${v.lat},${v.lng}`:`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(v.origen)}`;
+  $('#call').href='tel:'+(v.telefono||'');$('#adv').textContent=v.estado==='en_camino'?'✅ Pasajero a bordo':'🏁 Finalizar viaje';
+  if(v.lat){const ll=[v.lat,v.lng];pas?pas.setLatLng(ll):pas=L.marker(ll,{icon:pin('📍','#ef4444')}).addTo(map)}})
+}
+$('#adv').onclick=()=>{
+ if(!via)return;const fin=via.estado==='a_bordo';if(fin&&!confirm('¿Finalizar el viaje?'))return;
+ const n=fin?'finalizado':'a_bordo',u={[`viajes/${vid}/estado`]:n,[`solicitudes/${via.solicitudId}/estado`]:n};
+ if(fin)Object.assign(u,{[`viajes/${vid}/tsFin`]:TS,[`choferes/${K}/estado`]:'disponible',[`choferes/${K}/viajeActivo`]:null,[`choferes/${K}/tsCola`]:TS});
+ multi(u).catch(e=>toast('Error',e.message));
+};
+
+// GPS en un nodo aparte (pos/) para no disparar re-renders en la central; máx. 1 escritura cada 5 s
+function gps(){
+ if(!navigator.geolocation)return $('#gps').textContent='Sin GPS';
+ navigator.geolocation.watchPosition(p=>{const ll=[p.coords.latitude,p.coords.longitude];$('#gps').textContent='GPS activo';
+  me?me.setLatLng(ll):(me=L.marker(ll,{icon:pin('🚖','#3b82f6')}).addTo(map),map.setView(ll,15));
+  if(Date.now()-lastPos>5000){lastPos=Date.now();D.set(P('pos/'+K),{lat:ll[0],lng:ll[1],ts:Date.now()})}
+ },()=>$('#gps').textContent='GPS sin permiso',{enableHighAccuracy:true,maximumAge:3000});
+}
+$('#cf').onsubmit=e=>{e.preventDefault();chatSend('chats_choferes/'+K,'c',$('#ct').value);$('#ct').value=''};
+$('#exit').onclick=async()=>{if(vid)return toast('Viaje en curso','Finalizá el viaje antes de salir');await D.update(P('choferes/'+K),{estado:'cerrado',conectado:false});delete localStorage[LS];location.reload()};
+</script></body></html>

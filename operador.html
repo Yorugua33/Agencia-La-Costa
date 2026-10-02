@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#050b1a">
+<title>Central</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Outfit:wght@600;700;800&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script></head>
+<body>
+<div id="login" class="overlay"><form id="lf" class="card"><div class="brand" style="justify-content:center"><img src="https://i.imgur.com/fZzzc3U.png" alt=""><h1 id="brand">Central</h1></div>
+ <h3 class="c">Acceso de operador</h3>
+ <input id="em" type="email" placeholder="Email" required autocomplete="username">
+ <input id="pw" type="password" placeholder="Contraseña" required autocomplete="current-password">
+ <div class="err" id="le"></div><button>Ingresar</button></form></div>
+
+<header>
+ <div class="brand"><img src="https://i.imgur.com/fZzzc3U.png" alt=""><div><h1 id="brand2">Central</h1><small>Panel de control</small></div></div>
+ <div class="row"><div class="kpi"><b id="k1">0</b><span>Pedidos</span></div><div class="kpi"><b id="k2">0</b><span>En curso</span></div><div class="kpi"><b id="k3">0</b><span>En fila</span></div>
+ <span class="mut" id="me"></span><button class="g sm" id="out">Salir</button></div>
+</header>
+
+<div class="op">
+ <aside>
+  <div class="tabs" id="tabs"><button data-t="ped" class="on">Pedidos</button><button data-t="cur">En curso</button><button data-t="flo">Flota</button><button data-t="caj">Caja</button></div>
+
+  <div id="t-ped" class="card">
+   <details><summary class="mut" style="cursor:pointer">📞 Carga manual (teléfono)</summary>
+    <form id="mf" style="display:grid;gap:8px;margin-top:10px">
+     <div class="grid2"><input id="mn" placeholder="Pasajero" required><input id="mt" list="agenda" placeholder="Teléfono"></div>
+     <datalist id="agenda"></datalist>
+     <div class="grid2"><select id="mzo"></select><select id="mzd"></select></div>
+     <input id="mc" placeholder="Calle / referencia (opcional)"><button>Enviar a la fila</button></form></details>
+   <div id="l-ped" class="list"></div>
+  </div>
+  <div id="t-cur" class="card" hidden><div id="l-cur" class="list"></div></div>
+  <div id="t-flo" class="card" hidden><div class="row"><h3>Flota</h3><button class="sm" data-a="alta">➕ Alta chofer</button></div><div id="l-flo" class="list"></div></div>
+  <div id="t-caj" class="card" hidden><div id="l-caj"></div></div>
+ </aside>
+
+ <section>
+  <div class="card"><div id="map" class="map"></div></div>
+  <div class="card"><div class="row"><h3>Mensajes</h3><div id="convs" class="row" style="justify-content:flex-start"></div></div>
+   <div id="chat" class="chat"></div>
+   <form id="cf" class="row" style="flex-wrap:nowrap"><input id="ct" placeholder="Seleccioná una conversación…" autocomplete="off"><button class="sm">Enviar</button></form></div>
+ </section>
+</div>
+
+<dialog id="dlg"><form id="df"><h3 id="dt">Alta de chofer</h3><input type="hidden" id="dk">
+ <div class="grid2"><input id="d-movil" placeholder="Nº móvil" required><input id="d-chofer" placeholder="Nombre" required></div>
+ <div class="grid2"><input id="d-telefono" placeholder="Teléfono"><input id="d-patente" placeholder="Patente"></div>
+ <div class="grid2"><input id="d-auto" placeholder="Auto / modelo"><input id="d-color" placeholder="Color"></div>
+ <input id="d-pin" inputmode="numeric" placeholder="PIN de acceso (4-6 dígitos)">
+ <div class="row"><button type="button" class="g" id="dx">Cancelar</button><button>Guardar</button></div></form></dialog>
+
+<script type="module">
+import{AG,D,A,auth,P,TS,multi,ESTADOS,esc,$,money,ago,chip,loadCfg,listen,mkMap,pin,toast,beep,printTicket,chatBind,chatSend}from'./core.js';
+const cfg=await loadCfg();$('#brand').textContent=$('#brand2').textContent=cfg.nombre;document.title=cfg.nombre+' | Central';
+const zonas=cfg.zonas.map(z=>`<option>${esc(z)}</option>`).join('');$('#mzo').innerHTML=$('#mzd').innerHTML=zonas;
+const S={sol:{},via:{},cho:{},pos:{}};let map,mk={},known=null,chat=null,started=0;
+
+// ---------- Acceso (Firebase Auth + lista de operadores autorizados) ----------
+$('#lf').onsubmit=async e=>{e.preventDefault();$('#le').textContent='';try{await A.signInWithEmailAndPassword(auth,$('#em').value,$('#pw').value)}catch{$('#le').textContent='Credenciales inválidas'}};
+A.onAuthStateChanged(auth,async u=>{
+ if(!u||u.isAnonymous)return $('#login').hidden=false;
+ let ok=false;try{ok=(await D.get(P('operadores/'+u.uid))).val()===true}catch{}
+ if(!ok){$('#le').textContent='Este usuario no tiene permisos de operador';return A.signOut(auth)}
+ $('#login').hidden=true;$('#me').textContent=u.email;start();
+});
+$('#out').onclick=()=>A.signOut(auth).then(()=>location.reload());
+
+function start(){
+ if(started++)return;map=mkMap('map',cfg.centro);
+ // Consultas acotadas (solo lo abierto): el panel no se degrada con el historial
+ listen('sol',D.query(P('solicitudes'),D.orderByChild('estado'),D.equalTo('pendiente')),v=>{v=v||{};
+  if(known)for(const k in v)if(!known.has(k)){beep();toast('Nuevo pedido',v[k].pasajero)}
+  known=new Set(Object.keys(v));S.sol=v;render()});
+ listen('via',D.query(P('viajes'),D.orderByChild('cerrado'),D.equalTo(false)),v=>{S.via=v||{};render()});
+ listen('cho',P('choferes'),v=>{S.cho=v||{};render()});
+ listen('pos',P('pos'),v=>{S.pos=v||{};mapa()});
+ listen('pas',P('pasajeros'),v=>{$('#agenda').innerHTML=Object.values(v||{}).map(p=>`<option value="${esc(p.telefono)}">${esc(p.nombre)}</option>`).join('')});
+ setInterval(render,30000);
+}
+
+// ---------- Helpers de datos ----------
+const fifo=()=>Object.entries(S.cho).filter(([,c])=>c.estado==='disponible'&&c.conectado!==false).sort((a,b)=>(a[1].tsCola||0)-(b[1].tsCola||0));
+const cerrados=()=>Object.entries(S.via).filter(([,v])=>v.estado==='finalizado');
+const sum=a=>a.reduce((t,[,v])=>t+Number(v.monto||0),0);
+
+function render(){
+ $('#k1').textContent=Object.keys(S.sol).length;$('#k2').textContent=Object.values(S.via).filter(v=>v.estado!=='finalizado').length;$('#k3').textContent=fifo().length;
+ pedidos();curso();flota();caja();convs();mapa();
+}
+
+// ---------- Pedidos + despacho ----------
+function pedidos(){
+ const l=Object.entries(S.sol).sort((a,b)=>(a[1].ts||0)-(b[1].ts||0)),f=fifo();
+ $('#l-ped').innerHTML=l.map(([k,s])=>`<div class="item"><div class="row"><b>👤 ${esc(s.pasajero)}</b><span class="mut">${ago(s.ts)}</span></div>
+  <div>📍 ${esc(s.origen)} → 🏁 ${esc(s.destino)}</div><div class="mut">📞 ${esc(s.telefono||'S/T')}${s.lat?` · <a href="#" data-a="foco" data-lat="${s.lat}" data-lng="${s.lng}">ver en mapa</a>`:''}</div>
+  ${s.audio?`<audio controls src="${esc(s.audio)}" style="width:100%;height:32px"></audio>`:''}
+  <div class="row" style="flex-wrap:nowrap"><select id="sel-${k}">${f.map(([ck,c],i)=>`<option value="${ck}">${i+1}. #${esc(c.movil)} ${esc(c.chofer)}</option>`).join('')||'<option value="">Sin choferes disponibles</option>'}</select><button class="sm" data-a="despachar" data-id="${k}" ${f.length?'':'disabled'}>Despachar</button></div>
+  <button class="g sm" data-a="descartar" data-id="${k}">Descartar</button></div>`).join('')||'<div class="mut c">Sin pedidos pendientes</div>';
+}
+// Un único update atómico: viaje + solicitud (que ve el pasajero) + chofer. Antes eran 3 escrituras sueltas y desconectadas.
+function despachar(sid){
+ const ck=$('#sel-'+sid)?.value,s=S.sol[sid],c=S.cho[ck];if(!ck||!s||!c)return;
+ const vid=D.push(P('viajes')).key,monto=Number(s.monto)||cfg.tarifaBase,tel=String(s.telefono||'').replace(/\D/g,'');
+ const u={[`viajes/${vid}`]:{solicitudId:sid,choferKey:ck,movil:c.movil,chofer:c.chofer,pasajero:s.pasajero,telefono:s.telefono||'',origen:s.origen,destino:s.destino,lat:s.lat??null,lng:s.lng??null,monto,estado:'en_camino',cerrado:false,ts:TS},
+  [`solicitudes/${sid}/estado`]:'en_camino',[`solicitudes/${sid}/viajeId`]:vid,[`solicitudes/${sid}/choferKey`]:ck,[`solicitudes/${sid}/movil`]:c.movil,[`solicitudes/${sid}/chofer`]:c.chofer,[`solicitudes/${sid}/auto`]:c.auto||'',[`solicitudes/${sid}/color`]:c.color||'',[`solicitudes/${sid}/patente`]:c.patente||'',[`solicitudes/${sid}/telefonoChofer`]:c.telefono||'',[`solicitudes/${sid}/monto`]:monto,
+  [`choferes/${ck}/estado`]:'ocupado',[`choferes/${ck}/viajeActivo`]:vid};
+ if(tel.length>5)Object.assign(u,{[`pasajeros/${tel}/nombre`]:s.pasajero,[`pasajeros/${tel}/telefono`]:s.telefono,[`pasajeros/${tel}/origen`]:s.origen,[`pasajeros/${tel}/viajes`]:D.increment(1)});
+ multi(u).then(()=>toast('Despachado',`Móvil #${c.movil} → ${s.pasajero}`)).catch(e=>toast('Error',e.message));
+}
+
+// ---------- Viajes en curso ----------
+function curso(){
+ $('#l-cur').innerHTML=Object.entries(S.via).filter(([,v])=>v.estado!=='finalizado').map(([k,v])=>`<div class="item"><div class="row"><b>🚖 #${esc(v.movil)} · ${esc(v.chofer)}</b>${chip(v.estado)}</div>
+  <div>👤 ${esc(v.pasajero)} <span class="mut">${esc(v.telefono)}</span></div><div class="mut">${esc(v.origen)} → ${esc(v.destino)}</div>
+  <div class="row" style="flex-wrap:nowrap"><input id="m-${k}" type="number" min="0" value="${Number(v.monto)||''}" placeholder="Tarifa final"><button class="sm" data-a="tarifa" data-id="${k}">Guardar</button></div>
+  <div class="row"><button class="ok sm" data-a="finalizar" data-id="${k}">🏁 Cobrar y finalizar</button><button class="bad sm" data-a="cancelar" data-id="${k}">Cancelar</button></div></div>`).join('')||'<div class="mut c">Sin viajes en curso</div>';
+}
+function cerrarViaje(id,estado,monto){
+ const v=S.via[id];if(!v)return;const u={[`viajes/${id}/estado`]:estado,[`viajes/${id}/tsFin`]:TS,[`solicitudes/${v.solicitudId}/estado`]:estado==='finalizado'?'finalizado':'cancelada',[`choferes/${v.choferKey}/estado`]:'disponible',[`choferes/${v.choferKey}/viajeActivo`]:null};
+ if(monto){u[`viajes/${id}/monto`]=monto;u[`solicitudes/${v.solicitudId}/monto`]=monto}
+ if(estado==='finalizado')u[`choferes/${v.choferKey}/tsCola`]=TS;else u[`viajes/${id}/cerrado`]=true; // al cancelar, el chofer conserva su lugar en la fila
+ multi(u).then(()=>{if(estado==='finalizado'&&confirm('Viaje finalizado. ¿Imprimir ticket del pasajero?'))printTicket(cfg.nombre.toUpperCase(),[['Pasajero:',v.pasajero],['Origen:',v.origen],['Destino:',v.destino],['Móvil:','#'+v.movil],['TOTAL:',money(monto)]],'¡Gracias por viajar con nosotros!')}).catch(e=>toast('Error',e.message));
+}
+
+// ---------- Flota ----------
+function flota(){
+ const pos=Object.fromEntries(fifo().map(([k],i)=>[k,i+1])),e={disponible:'ok',pausa:'warn',ocupado:'info',cerrado:'bad'};
+ $('#l-flo').innerHTML=Object.entries(S.cho).sort((a,b)=>String(a[1].movil).localeCompare(String(b[1].movil),'es',{numeric:true})).map(([k,c])=>{
+  const vs=cerrados().filter(([,v])=>v.choferKey===k),rec=sum(vs);
+  return`<div class="item"><div class="row"><b><span class="dot ${c.conectado!==false&&c.estado!=='cerrado'?'on':''}"></span> #${esc(c.movil)} · ${esc(c.chofer)}</b><span class="chip ${e[c.estado]||'mut'}">${pos[k]?'Fila #'+pos[k]:esc(c.estado||'cerrado')}</span></div>
+  <div class="mut">🚘 ${esc(c.auto||'—')} ${esc(c.color||'')} · ${esc(c.patente||'S/D')} · 📞 ${esc(c.telefono||'S/T')}</div>
+  <div class="mut">Viajes: <b>${vs.length}</b> · Recaudado: <b>${money(rec)}</b> · Comisión ${cfg.comision}%: <b>${money(Math.round(rec*cfg.comision/100))}</b></div>
+  <div class="row"><button class="g sm" data-a="est" data-k="${k}" data-e="disponible">Activar</button><button class="g sm" data-a="est" data-k="${k}" data-e="pausa">Pausa</button><button class="g sm" data-a="est" data-k="${k}" data-e="cerrado">Cerrar</button><button class="g sm" data-a="print" data-k="${k}">🖨</button><button class="g sm" data-a="editar" data-k="${k}">✏️</button><button class="bad sm" data-a="borrar" data-k="${k}">🗑</button></div></div>`}).join('')||'<div class="mut c">Sin choferes registrados</div>';
+}
+
+// ---------- Caja (se archiva, nunca se borra) ----------
+function totales(){const c=cerrados(),t=sum(c),com=Math.round(t*cfg.comision/100);return{n:c.length,t,com,neto:t-com}}
+function caja(){
+ const x=totales();
+ $('#l-caj').innerHTML=`<h3>Caja abierta</h3><div class="grid2" style="margin:10px 0"><div class="kpi"><b>${x.n}</b><span>Viajes</span></div><div class="kpi"><b>${money(x.t)}</b><span>Recaudación</span></div><div class="kpi"><b>${money(x.com)}</b><span>Agencia ${cfg.comision}%</span></div><div class="kpi"><b>${money(x.neto)}</b><span>Neto choferes</span></div></div>
+ <table><tr><th>Móvil</th><th class="n">Viajes</th><th class="n">Total</th><th class="n">Neto</th></tr>${Object.entries(S.cho).map(([k,c])=>{const vs=cerrados().filter(([,v])=>v.choferKey===k),t=sum(vs);return vs.length?`<tr><td>#${esc(c.movil)} ${esc(c.chofer)}</td><td class="n">${vs.length}</td><td class="n">${money(t)}</td><td class="n">${money(t-Math.round(t*cfg.comision/100))}</td></tr>`:''}).join('')}</table>
+ <div class="row" style="margin-top:12px"><button class="g sm" data-a="xlsx">📊 Excel</button><button class="g sm" data-a="agenda">👥 Agenda</button><button class="g sm" data-a="printcaja">🖨 58 mm</button><button class="bad sm" data-a="cerrarcaja" ${x.n?'':'disabled'}>Cerrar caja</button></div>`;
+}
+function cerrarCaja(){
+ const x=totales();if(!confirm(`Cerrar caja: ${x.n} viajes por ${money(x.t)}.\nQuedan archivados y la caja vuelve a $0.`))return;
+ const id=D.push(P('cierres')).key,u={[`cierres/${id}`]:{ts:TS,por:auth.currentUser.email,...x}};cerrados().forEach(([k])=>u[`viajes/${k}/cerrado`]=true);
+ multi(u).then(()=>toast('Caja cerrada','Archivada en el historial de cierres')).catch(e=>toast('Error',e.message));
+}
+
+// ---------- Mensajes ----------
+function convs(){
+ const l=[...Object.entries(S.cho).filter(([,c])=>c.estado!=='cerrado').map(([k,c])=>['chats_choferes/'+k,'🚖 #'+c.movil,'o']),
+  ...Object.entries(S.sol).map(([k,s])=>['chats/'+k,'👤 '+s.pasajero,'o']),
+  ...Object.values(S.via).filter(v=>v.estado!=='finalizado'&&v.solicitudId).map(v=>['chats/'+v.solicitudId,'👤 '+v.pasajero,'o'])];
+ $('#convs').innerHTML=l.map(([p,t])=>`<button class="sm ${chat===p?'':'g'}" data-a="chat" data-p="${esc(p)}">${esc(t)}</button>`).join('')||'<span class="mut">Sin conversaciones</span>';
+}
+
+// ---------- Mapa: marcadores se actualizan en su lugar ----------
+function mapa(){
+ if(!map)return;const col={disponible:'#10b981',pausa:'#f59e0b',ocupado:'#3b82f6'},vivos=new Set();
+ for(const[k,c]of Object.entries(S.cho)){const p=S.pos[k];if(!p||c.estado==='cerrado')continue;vivos.add(k);const ll=[p.lat,p.lng],ic=pin('🚖',col[c.estado]||'#64748b');
+  mk[k]?(mk[k].setLatLng(ll),mk[k].setIcon(ic)):mk[k]=L.marker(ll,{icon:ic}).addTo(map).bindPopup(`<b>#${esc(c.movil)}</b> ${esc(c.chofer)}`)}
+ for(const k in mk)if(!vivos.has(k)){map.removeLayer(mk[k]);delete mk[k]}
+}
+
+// ---------- Alta / edición de chofer ----------
+const F=['movil','chofer','telefono','auto','color','patente'];
+function dlg(k){const c=S.cho[k]||{};$('#dt').textContent=k?'Editar chofer':'Alta de chofer';$('#dk').value=k||'';F.forEach(f=>$('#d-'+f).value=c[f]||'');$('#d-pin').value='';$('#d-pin').required=!k;$('#d-pin').placeholder=k?'Nuevo PIN (vacío = no cambiar)':'PIN de acceso (4-6 dígitos)';$('#dlg').showModal()}
+$('#dx').onclick=()=>$('#dlg').close();
+$('#df').onsubmit=e=>{e.preventDefault();const ed=$('#dk').value,m=$('#d-movil').value.trim(),k=ed||'chofer_'+m,u={};
+ F.forEach(f=>u[`choferes/${k}/${f}`]=$('#d-'+f).value.trim());
+ if(!ed){u[`choferes/${k}/estado`]='cerrado';u[`choferes/${k}/conectado`]=false}
+ const pn=$('#d-pin').value.trim();if(pn){if(!/^\d{4,6}$/.test(pn))return toast('PIN inválido','Usá 4 a 6 dígitos');u[`pins/${k}`]=pn}
+ multi(u).then(()=>$('#dlg').close()).catch(e=>toast('Error',e.message))};
+
+// ---------- Carga manual ----------
+$('#mf').onsubmit=e=>{e.preventDefault();const o=$('#mc').value.trim(),zo=$('#mzo').value,id=D.push(P('solicitudes')).key;
+ D.set(P('solicitudes/'+id),{uid:auth.currentUser.uid,pasajero:$('#mn').value.trim(),telefono:$('#mt').value.trim(),origen:o?`${o} (${zo})`:zo,destino:$('#mzd').value,estado:'pendiente',monto:cfg.tarifaBase,origenManual:true,ts:TS}).then(()=>{e.target.reset();toast('Pedido cargado','Ya está en la fila de despacho')})};
+
+// ---------- Exportaciones ----------
+const xl=(rows,name)=>{if(!rows.length)return toast('Sin datos','No hay nada para exportar');const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows),'Datos');XLSX.writeFile(wb,name)};
+
+// ---------- Eventos (un solo listener delegado, sin onclick inline) ----------
+const A_={
+ despachar:d=>despachar(d.id),descartar:d=>confirm('¿Descartar este pedido?')&&D.update(P('solicitudes/'+d.id),{estado:'cancelada'}),
+ foco:d=>map.setView([+d.lat,+d.lng],16),
+ tarifa:d=>{const m=+$('#m-'+d.id).value;m>0?D.update(P('viajes/'+d.id),{monto:m}).then(()=>toast('Tarifa actualizada',money(m))):toast('Importe inválido')},
+ finalizar:d=>{const m=+$('#m-'+d.id).value;m>0?cerrarViaje(d.id,'finalizado',m):toast('Ingresá la tarifa final')},
+ cancelar:d=>confirm('¿Cancelar este viaje? El chofer conserva su lugar en la fila.')&&cerrarViaje(d.id,'cancelado'),
+ est:d=>multi({[`choferes/${d.k}/estado`]:d.e,[`choferes/${d.k}/tsCola`]:TS}),
+ alta:()=>dlg(),editar:d=>dlg(d.k),
+ borrar:d=>confirm('¿Eliminar este chofer definitivamente?')&&multi({[`choferes/${d.k}`]:null,[`pins/${d.k}`]:null,[`claims/${d.k}`]:null,[`pos/${d.k}`]:null}),
+ print:d=>{const c=S.cho[d.k],vs=cerrados().filter(([,v])=>v.choferKey===d.k),t=sum(vs),com=Math.round(t*cfg.comision/100);printTicket(cfg.nombre.toUpperCase(),[['Móvil:','#'+c.movil],['Chofer:',c.chofer],['Fecha:',new Date().toLocaleString('es-AR')],['Viajes:',vs.length],['Recaudación:',money(t)],[`Comisión ${cfg.comision}%:`,money(com)],['NETO:',money(t-com)]],'Resumen de chofer')},
+ xlsx:()=>xl(cerrados().map(([k,v])=>({Fecha:v.tsFin?new Date(v.tsFin).toLocaleString('es-AR'):'',Movil:v.movil,Chofer:v.chofer,Pasajero:v.pasajero,Origen:v.origen,Destino:v.destino,Monto:Number(v.monto||0)})),`Caja_${new Date().toISOString().slice(0,10)}.xlsx`),
+ agenda:async()=>xl(Object.values((await D.get(P('pasajeros'))).val()||{}),'Agenda_pasajeros.xlsx'),
+ printcaja:()=>{const x=totales();printTicket(cfg.nombre.toUpperCase(),[['Viajes:',x.n],['Recaudación:',money(x.t)],[`Comisión ${cfg.comision}%:`,money(x.com)],['Neto choferes:',money(x.neto)]],'Cierre de caja')},
+ cerrarcaja:cerrarCaja,
+ chat:d=>{chat=d.p;const w=d.p.startsWith('chats_choferes')?'o':'o';chatBind('#chat',chat,w);$('#ct').placeholder='Escribir…';convs()}
+};
+document.addEventListener('click',e=>{const b=e.target.closest('[data-a]');if(b){e.preventDefault();A_[b.dataset.a]?.(b.dataset)}});
+$('#cf').onsubmit=e=>{e.preventDefault();if(!chat)return toast('Elegí una conversación');chatSend(chat,'o',$('#ct').value);$('#ct').value=''};
+$('#tabs').onclick=e=>{const t=e.target.dataset.t;if(!t)return;[...$('#tabs').children].forEach(b=>b.classList.toggle('on',b===e.target));['ped','cur','flo','caj'].forEach(x=>$('#t-'+x).hidden=x!==t)};
+</script></body></html>

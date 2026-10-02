@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#050b1a">
+<title>Pedí tu remís</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Outfit:wght@600;700;800&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script></head>
+<body>
+<header><div class="brand"><img src="https://i.imgur.com/fZzzc3U.png" alt=""><div><h1 id="brand">Remis</h1><small>Portal del pasajero</small></div></div><span class="chip ok">● Servicio activo</span></header>
+<main class="wrap">
+ <form id="a" class="card">
+  <h3>Pedí tu remís</h3>
+  <input id="nom" placeholder="Nombre y apellido" required autocomplete="name">
+  <input id="tel" type="tel" placeholder="Teléfono de contacto" required autocomplete="tel">
+  <input id="ori" placeholder="Dónde te buscamos (calle y altura)">
+  <input id="des" placeholder="A dónde vas">
+  <button>Solicitar remís</button>
+  <div class="row" style="border-top:1px solid var(--ln);padding-top:12px">
+   <span class="mut" id="mst">¿Preferís hablar? Grabá tu pedido (máx. 30 s).</span>
+   <button type="button" class="g" id="mic">🎙️ Grabar</button>
+  </div>
+  <audio id="pv" controls hidden style="width:100%"></audio>
+  <div class="mut">Usaremos tu ubicación para que el chofer te encuentre más rápido.</div>
+ </form>
+
+ <section id="b" hidden class="card">
+  <div class="row"><h3>Tu viaje</h3><span id="st"></span></div>
+  <ol class="steps" id="steps"></ol>
+  <div id="info"></div>
+  <div id="map" class="map"></div>
+  <h3>Chat con la central</h3>
+  <div id="chat" class="chat"></div>
+  <form id="cf" class="row" style="flex-wrap:nowrap"><input id="ct" placeholder="Escribí un mensaje…" autocomplete="off"><button class="sm">Enviar</button></form>
+  <button id="cancel" class="bad" hidden>Cancelar pedido</button>
+  <button id="fin" class="ok" hidden>🖨️ Ticket del viaje</button>
+  <button id="nuevo" class="g" hidden>Nuevo pedido</button>
+ </section>
+</main>
+
+<script type="module">
+import{AG,D,P,TS,ensureAnon,ESTADOS,esc,$,money,chip,loadCfg,listen,mkMap,pin,toast,printTicket,chatBind,chatSend}from'./core.js';
+const cfg=await loadCfg();document.title=cfg.nombre+' | Pedí tu remís';$('#brand').textContent=cfg.nombre;
+const user=await ensureAnon(),KEY='rid:'+AG,STEPS=['pendiente','en_camino','a_bordo','finalizado'];
+let map,me,car,ck,last,audio=null,rec,timer;
+
+// --- Grabación de voz (se adjunta al pedido) ---
+$('#mic').onclick=async()=>{
+ if(rec?.state==='recording')return rec.stop();
+ try{const st=await navigator.mediaDevices.getUserMedia({audio:true}),ch=[];rec=new MediaRecorder(st);
+  rec.ondataavailable=e=>ch.push(e.data);
+  rec.onstop=()=>{clearTimeout(timer);st.getTracks().forEach(t=>t.stop());$('#mic').classList.remove('rec');$('#mic').textContent='🎙️ Regrabar';
+   const r=new FileReader();r.onload=()=>{if(r.result.length>450000)return toast('Audio muy largo','Probá con un mensaje más corto');audio=r.result;$('#pv').src=audio;$('#pv').hidden=false;$('#mst').textContent='Audio listo. Se enviará con tu pedido.'};r.readAsDataURL(new Blob(ch,{type:rec.mimeType}))};
+  rec.start();$('#mic').classList.add('rec');$('#mic').textContent='⏹ Detener';timer=setTimeout(()=>rec.stop(),30000)
+ }catch{toast('Micrófono','No pudimos acceder al micrófono')}
+};
+
+// --- Crear pedido ---
+$('#a').onsubmit=async e=>{e.preventDefault();
+ const ori=$('#ori').value.trim();if(!ori&&!audio)return toast('Falta el origen','Escribí tu dirección o grabá un audio');
+ const btn=e.submitter;btn.disabled=true;
+ const c=await new Promise(r=>navigator.geolocation?navigator.geolocation.getCurrentPosition(p=>r(p.coords),()=>r(null),{timeout:6000,enableHighAccuracy:true}):r(null));
+ const id=D.push(P('solicitudes')).key;
+ try{await D.set(P('solicitudes/'+id),{uid:user.uid,pasajero:$('#nom').value.trim().slice(0,80),telefono:$('#tel').value.trim().slice(0,30),origen:ori||'Pedido por nota de voz 🎤',destino:$('#des').value.trim()||'A coordinar',lat:c?.latitude??null,lng:c?.longitude??null,audio,estado:'pendiente',monto:cfg.tarifaBase,ts:TS});track(id)}
+ catch(err){toast('No se pudo enviar',err.message);btn.disabled=false}
+};
+
+// --- Seguimiento en vivo ---
+function track(id){
+ localStorage[KEY]=id;$('#a').hidden=true;$('#b').hidden=false;map??=mkMap('map',cfg.centro);
+ listen('sol',P('solicitudes/'+id),s=>{
+  if(!s){delete localStorage[KEY];return location.reload()}
+  last=s;const i=STEPS.indexOf(s.estado),x=s.estado==='cancelada';
+  $('#st').innerHTML=chip(s.estado);$('#steps').innerHTML=x?'':STEPS.map((k,j)=>`<li class="${j<=i?'on':''}">${ESTADOS[k][0]}</li>`).join('');
+  $('#info').innerHTML=s.movil?`<div class="item"><div class="row"><b>Móvil #${esc(s.movil)} · ${esc(s.chofer)}</b><b style="color:var(--ok)">${money(s.monto)}</b></div><div class="mut">${esc(s.auto||'')} ${esc(s.color||'')} · Patente <b style="color:var(--gold)">${esc(s.patente||'S/D')}</b></div>${s.telefonoChofer?`<a class="mut" href="tel:${esc(s.telefonoChofer)}">📞 Llamar al chofer</a>`:''}</div>`:x?'<p class="mut">El pedido fue cancelado.</p>':`<p class="mut">Estamos buscando la unidad más cercana…${cfg.telefono?` Urgencias: <a href="tel:${esc(cfg.telefono)}">${esc(cfg.telefono)}</a>`:''}</p>`;
+  if(s.lat&&!me){me=L.marker([s.lat,s.lng],{icon:pin('📍','#ef4444')}).addTo(map).bindPopup('Tu ubicación');map.setView([s.lat,s.lng],15)}
+  if(s.choferKey&&s.choferKey!==ck){ck=s.choferKey;listen('pos',P('pos/'+ck),p=>{if(!p)return;const ll=[p.lat,p.lng];car?car.setLatLng(ll):car=L.marker(ll,{icon:pin('🚖','#3b82f6')}).addTo(map);if(me)map.fitBounds(L.latLngBounds([me.getLatLng(),ll]),{padding:[40,40],maxZoom:16})})}
+  $('#cancel').hidden=s.estado!=='pendiente';$('#fin').hidden=s.estado!=='finalizado';$('#nuevo').hidden=!['finalizado','cancelada'].includes(s.estado);
+ });
+ chatBind('#chat','chats/'+id,'p');
+}
+$('#cf').onsubmit=e=>{e.preventDefault();chatSend('chats/'+localStorage[KEY],'p',$('#ct').value);$('#ct').value=''};
+$('#cancel').onclick=()=>confirm('¿Cancelar el pedido?')&&D.update(P('solicitudes/'+localStorage[KEY]),{estado:'cancelada'});
+$('#nuevo').onclick=()=>{delete localStorage[KEY];location.reload()};
+$('#fin').onclick=()=>printTicket(cfg.nombre.toUpperCase(),[['Fecha:',new Date(last.ts).toLocaleString('es-AR')],['Pasajero:',last.pasajero],['Origen:',last.origen],['Destino:',last.destino],['Móvil:','#'+last.movil],['TOTAL:',money(last.monto)]],'¡Gracias por viajar con nosotros!');
+if(localStorage[KEY])track(localStorage[KEY]);
+</script></body></html>
